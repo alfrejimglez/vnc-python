@@ -9,10 +9,8 @@ import socket
 import subprocess
 import sys
 import time
-import webbrowser
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 try:
     import requests
@@ -23,15 +21,12 @@ except ImportError:
 try:
     from platformdirs import user_cache_dir
 except ImportError:
-    # Fallback simple si no está platformdirs
     def user_cache_dir(appname):
         return str(Path.home() / ".cache" / appname)
-
 
 NOVNC_VERSION = "1.5.0"
 NOVNC_RELEASE_ZIP = f"https://github.com/novnc/noVNC/archive/refs/tags/v{NOVNC_VERSION}.zip"
 APP_CACHE_DIR = Path(user_cache_dir("vnc-novnc-launcher"))
-
 
 def find_free_port(start=6080, end=65000):
     for port in range(start, end):
@@ -44,12 +39,7 @@ def find_free_port(start=6080, end=65000):
                 continue
     raise RuntimeError("No se encontró un puerto libre entre 6080 y 65000.")
 
-
 def ensure_novnc(version=NOVNC_VERSION):
-    """
-    Descarga y descomprime noVNC v{version} si no existe en caché.
-    Devuelve la ruta al directorio que contiene vnc.html.
-    """
     target_dir = APP_CACHE_DIR / f"noVNC-{version}"
     vnc_html = target_dir / "vnc.html"
 
@@ -66,20 +56,16 @@ def ensure_novnc(version=NOVNC_VERSION):
     print("Extrayendo noVNC ...")
     with zipfile.ZipFile(data) as zf:
         root_folder = None
-        # El zip trae carpeta raíz noVNC-{version}
         for info in zf.infolist():
             if info.is_dir():
                 if root_folder is None and info.filename.rstrip("/").endswith(f"noVNC-{version}"):
                     root_folder = info.filename.rstrip("/")
                 continue
         if root_folder is None:
-            # fallback si cambia el nombre
             for name in zf.namelist():
                 if name.rstrip("/").endswith("vnc.html"):
                     root_folder = name.split("/")[0]
                     break
-
-        # Extraemos sólo bajo target_dir
         for info in zf.infolist():
             if not info.filename.startswith(root_folder + "/"):
                 continue
@@ -96,7 +82,6 @@ def ensure_novnc(version=NOVNC_VERSION):
         raise RuntimeError("No se encontró vnc.html tras extraer noVNC.")
     return target_dir
 
-
 def wait_for_port(host, port, timeout=10.0):
     start = time.time()
     while time.time() - start < timeout:
@@ -109,12 +94,7 @@ def wait_for_port(host, port, timeout=10.0):
                 time.sleep(0.2)
     return False
 
-
 def launch_websockify(novnc_dir: Path, local_port: int, target_host: str, target_port: int, verbose: bool):
-    """
-    Lanza websockify sirviendo los estáticos de noVNC y proxy a host:port VNC.
-    Requiere tener instalado 'websockify' (pip install websockify).
-    """
     cmd = [
         sys.executable, "-m", "websockify",
         "--web", str(novnc_dir),
@@ -124,7 +104,6 @@ def launch_websockify(novnc_dir: Path, local_port: int, target_host: str, target
     if verbose:
         print("Ejecutando:", " ".join(cmd))
 
-    # En Windows, CTRL+C no siempre envía SIGINT a procesos hijos; usamos creationflags si hace falta.
     creationflags = 0
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -137,8 +116,7 @@ def launch_websockify(novnc_dir: Path, local_port: int, target_host: str, target
     )
     return proc
 
-
-def build_novnc_url(local_port: int, password: Optional[str], extra_params: Optional[dict] = None):
+def build_novnc_url(local_port: int, extra_params: dict | None = None):
     params = {
         "host": "127.0.0.1",
         "port": str(local_port),
@@ -149,26 +127,24 @@ def build_novnc_url(local_port: int, password: Optional[str], extra_params: Opti
         "resize": "scale",
         "view_only": "false",
     }
-    if password:
-        params["password"] = password
     if extra_params:
         params.update({k: str(v) for k, v in extra_params.items()})
-
     query = "&".join(f"{k}={v}" for k, v in params.items())
     return f"http://127.0.0.1:{local_port}/vnc.html?{query}"
 
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Lanza un visor VNC profesional usando noVNC + websockify desde Python."
+        description="Lanza un visor VNC usando noVNC + websockify desde Python (sin autenticación)."
     )
-    parser.add_argument("--host", required=True, help="Host o IP del servidor VNC (ej. 192.168.1.10)")
+    parser.add_argument("--host", help="Host o IP del servidor VNC")
     parser.add_argument("--port", type=int, default=5900, help="Puerto VNC (por defecto 5900)")
-    parser.add_argument("--password", help="Contraseña VNC (opcional, se pasa a la UI)")
     parser.add_argument("--local-port", type=int, default=0, help="Puerto local para servir noVNC (0 = automático)")
     parser.add_argument("--no-open", action="store_true", help="No abrir el navegador automáticamente")
     parser.add_argument("--verbose", action="store_true", help="Mostrar logs de websockify")
     args = parser.parse_args()
+
+    if not args.host:
+        args.host = input("Introduce el host/IP del servidor VNC: ").strip()
 
     try:
         novnc_dir = ensure_novnc(NOVNC_VERSION)
@@ -183,7 +159,6 @@ def main():
     def shutdown():
         if proc and proc.poll() is None:
             if os.name == "nt":
-                # En Windows, enviar CTRL_BREAK no es trivial; usamos terminate.
                 proc.terminate()
             else:
                 proc.send_signal(signal.SIGINT)
@@ -199,14 +174,16 @@ def main():
             shutdown()
             sys.exit(3)
 
-        url = build_novnc_url(local_port, args.password)
+        # Construir la URL sin contraseña ni usuario
+        url = build_novnc_url(local_port)
         print(f"URL de conexión: {url}")
+
         if not args.no_open:
-            webbrowser.open(url)
-            print("Abriendo el navegador...")
+            firefox_path = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+            subprocess.Popen([firefox_path, url])
+            print("Abriendo Firefox...")
 
         print("Pulsa Ctrl+C para finalizar. Dejando el proxy/UI en marcha.")
-        # Mantener vivo mientras el proceso hijo esté activo
         while proc.poll() is None:
             time.sleep(0.5)
 
@@ -214,11 +191,11 @@ def main():
         if rc not in (0, None):
             print(f"websockify terminó con código {rc}", file=sys.stderr)
             sys.exit(rc)
+
     except KeyboardInterrupt:
         print("\nCerrando...")
     finally:
         shutdown()
-
 
 if __name__ == "__main__":
     main()
